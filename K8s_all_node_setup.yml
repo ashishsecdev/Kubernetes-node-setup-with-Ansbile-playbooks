@@ -1,0 +1,109 @@
+--- # Ashishsecdev
+- hosts: all #includes master and worker node
+  become: yes
+  tasks:
+    - name: "Update K8s Hostnames"
+      hostname:
+        name: "{{ update_hostname }}"
+    - name: "Update servers host file from Ansible inventory files"
+      lineinfile:
+        path: /etc/hosts
+        regexp: '.*{{ item }}$'
+        line: "{{item}} {{ hostvars[item].update_hostname }}"
+        state: present
+      when: hostvars[item].update_hostname is defined
+      with_items: "{{ groups.all }}"
+    - name: "Reboot Servers"
+      reboot:
+    - name: "Pause task execution for 60 seconds"
+      pause:
+        minutes: 1
+        prompt: Hold execution for 60 Seconds.
+    - name: "Disable Swapping"
+      command: swapoff -a
+    - name: "Remove Swap entries from /etc/fstab"
+      lineinfile:
+        dest: /etc/fstab
+        regexp: swap
+        state: absent #deleting the entry
+    - name: "Create config file for containerd module"
+      copy:
+        content: ""
+        dest: /etc/modules-load.d/containerd.conf
+        force: no
+    - name: "Configure Containerd module"
+      blockinfile:
+        path: /etc/modules-load.d/containerd.conf
+        block: |
+          overlay
+          br_netfilter
+    - name: "Create config file for Kubernetes Sysctl params"
+      copy:
+        content: ""
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        force: no
+    - name: "Configure Kubernetes Sysctl params"
+      lineinfile:
+        path: /etc/sysctl.d/99-kubernetes-cri.conf
+        line: "{{ item }}"
+      with_items:
+        - 'net.bridge.bridge-nf-call-iptables  = 1'
+        - 'net.ipv4.ip_forward                 = 1'
+        - 'net.bridge.bridge-nf-call-ip6tables = 1'
+    - name: "Apply sysctl params"
+      command: sysctl --system
+    - name: "Prerequisites installation for Kubernetes"
+      apt:
+        name:
+          - apt-transport-https
+          - curl # You can add more to the list as per your requirements
+        state: present
+    - name: "Installing Containerd"
+      apt:
+        name:
+          - containerd
+        state: present
+    - name: "Configure path for Containerd"
+      file:
+        path: /etc/containerd
+        state: directory
+    - name: "Setup configuration for Containerd"
+      shell: /usr/bin/containerd config default > /etc/containerd/config.toml
+    - name: "Enable and Start Containerd"
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon-reload: yes
+    - name: "Add Google official GPG key"
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+    - name: "Add Kubernetes Repository"
+      apt_repository:
+        repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+        filename: kubernetes
+        mode: 0600
+    - name: "Update and upgrade apt packages"
+      apt:
+        update_cache: yes
+        cache_valid_time: 86400
+    - name: "Installing Kubernetes Packages"
+      apt:
+        name:
+          - kubeadm
+          - kubectl
+          - kubelet
+        state: present
+    - name: "Hold kubeadm kubectl kubelet"
+      shell: |
+              sudo apt-mark hold kubelet kubeadm kubectl
+    - name: "Enable service kubelet and enable persistently"
+      service:
+        name: kubelet
+        enabled: yes
+    - pause: seconds=20
+    - name: "Reboot all kubernetes nodes"
+      reboot:
+    - pause: seconds=20
